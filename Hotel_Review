@@ -1,0 +1,529 @@
+
+pip install corextopic
+
+# Commented out IPython magic to ensure Python compatibility.
+import pandas as pd
+import numpy as np
+import pickle
+import seaborn as sns
+import spacy
+import csv
+import nltk
+import matplotlib.pyplot as plt
+import warnings
+import re
+import string
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import CountVectorizer,TfidfVectorizer
+from sklearn.metrics import accuracy_score, confusion_matrix
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import DBSCAN, SpectralClustering, MeanShift
+from sklearn.decomposition import PCA,TruncatedSVD,NMF
+from sklearn import svm
+from sklearn.feature_extraction import text
+from sklearn.metrics.pairwise import cosine_similarity
+from nltk.tokenize import word_tokenize
+from sklearn.linear_model import LogisticRegression
+from sklearn.naive_bayes import BernoulliNB
+from sklearn.metrics import precision_score, recall_score, accuracy_score, roc_auc_score, roc_curve,confusion_matrix, f1_score
+from nltk.corpus import stopwords
+from autocorrect import Speller
+from matplotlib import pyplot as plt
+from corextopic import corextopic as ct
+from corextopic import vis_topic as vt
+from collections import Counter,Counter,defaultdict
+from scipy.linalg import svd
+from sklearn.tree import DecisionTreeClassifier
+spell = Speller(lang='en')
+# %matplotlib inline
+warnings.filterwarnings('ignore')
+sns.set_style("whitegrid")
+
+
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+"""# Importing data and EDA:"""
+
+df_original_data = pd.read_csv('/Hotel_Reviews.csv')
+df_all_data = df_original_data.copy()
+
+"""feature engineering: getting Countries Column  from hotel address columns:"""
+
+def get_contries():
+    df_all_data['Country'] = df_all_data.Hotel_Address.apply(lambda x: str(x).split(" ")[-1])
+    df_all_data['Country'] = df_all_data['Country'].str.replace('Kingdom','United Kingdom')
+get_contries()
+
+df_all_data
+
+df_all_data['Country'].unique()
+
+df_all_data['Country'].value_counts()
+
+"""Dividing Data into two parts, positive reviews and negative reviews:"""
+
+df_pos = df_all_data[['Positive_Review','Hotel_Name','Country','Reviewer_Score','Reviewer_Nationality']]
+df_neg = df_all_data[['Negative_Review','Hotel_Name','Country','Reviewer_Score','Reviewer_Nationality']]
+df_recom = df_all_data[['Reviewer_Nationality','Hotel_Name','Reviewer_Score']]
+
+"""Renaming columns from ('Positive_Review''Negative_Review') to Review"""
+
+df_pos.rename(columns = {'Positive_Review':'Review'},inplace= True)
+df_neg.rename(columns = {'Negative_Review':'Review'},inplace= True)
+
+"""Making new Column named Sentiment and assigning 1 to positive review and 0 to negative review"""
+
+df_pos['Sentiment'] = 1
+df_neg['Sentiment'] = 0
+df_all = pd.concat([df_pos,df_neg],ignore_index=True)
+df_drop = df_all.drop_duplicates()
+
+"""data contain non english letters. code below removes all non english reviews"""
+
+df_drop = df_drop[df_drop['Review'].map(lambda x: x.isascii())]
+
+"""Extra Data cleaning such as removing punctuation, repeated_chars etc..."""
+
+alphanumeric = lambda x: re.sub('\w*\d\w*', ' ', x)
+punc_lower = lambda x: re.sub('[%s]' % re.escape(string.punctuation), ' ', x.lower())
+repeated_chars = lambda x: re.sub('(.)\\1{2,}', '\\1', x)
+df_drop['Review'] = df_drop.Review.map(alphanumeric).map(punc_lower).map(repeated_chars)
+df_drop
+
+"""Data contain over 700,000. taking data sample is necessary. We started from 5000 sample till 100,000. After 100,000  we  noticed that the model is not improving nor changing. So, 100,000 is enough to work on"""
+
+data_sample = df_drop.sample(100000,random_state=2021)
+
+data_sample['Review'] = data_sample['Review'].map(lambda x: spell(x))
+
+file = open('data100000', 'rb')
+data_sample = pickle.load(file)
+file.close()
+
+df_drop
+
+data_sample
+
+"""Tokenizing and lemmatizing reviews"""
+
+w_tokenizer = nltk.tokenize.WhitespaceTokenizer()
+lemmatizer = nltk.stem.WordNetLemmatizer()
+
+def lemmatize_text(text):
+    return [lemmatizer.lemmatize(w) for w in w_tokenizer.tokenize(text)]
+
+data_sample['text_lemmatized'] = data_sample.Review.apply(lemmatize_text)
+
+data_sample['Joined_text_lemmatize'] =  data_sample['text_lemmatized'].apply(lambda x: ' '.join(x))
+
+nlp = spacy.load('en_core_web_sm')
+data_sample['spacy_doc'] = list(nlp.pipe(data_sample.Joined_text_lemmatize))
+data_sample
+
+"""# Topicing"""
+
+Positive = open('wordpo', 'rb')
+Negative = open('wordne', 'rb')
+wordss = pickle.load(Positive)
+words_neg = pickle.load(Negative)
+Positive.close()
+Negative.close()
+
+positive_reviews = data_sample[data_sample.Sentiment==1]
+negative_reviews = data_sample[data_sample.Sentiment==0]
+
+sam_pos_df = positive_reviews.copy()
+sam_neg_df = negative_reviews.copy()
+
+sam_pos_df['Review'] = sam_pos_df['Review'].str.replace("hotel" , "")
+sam_neg_df['Review'] = sam_neg_df['Review'].str.replace("hotel" , "")
+
+"""## WordCloud for Positive Reviews:"""
+
+from wordcloud import WordCloud
+
+long_string = ','.join(list(sam_pos_df['Review'].values))
+wordcloud = WordCloud(background_color="white", max_words=500, contour_width=3, contour_color='steelblue', width=800, height=400)
+wordcloud.generate(long_string)
+wordcloud.to_image()
+
+"""## WordCloud for Negative Reviews:"""
+
+long_string = ','.join(list(sam_neg_df['Review'].values))
+wordcloud = WordCloud(background_color="white", max_words=500, contour_width=3, contour_color='steelblue', width=800, height=400)
+wordcloud.generate(long_string)
+wordcloud.to_image()
+
+pos_adj = [token.text.lower() for doc in positive_reviews.spacy_doc for token in doc if token.pos_ =='ADJ']
+neg_adj = [token.text.lower() for doc in negative_reviews.spacy_doc for token in doc if token.pos_=='ADJ']
+
+pos_noun = [token.text.lower() for doc in positive_reviews.spacy_doc for token in doc if token.pos_=='NOUN']
+neg_noun = [token.text.lower() for doc in negative_reviews.spacy_doc for token in doc if token.pos_ == 'NOUN']
+
+print('Positive Adjective: ',Counter(pos_adj).most_common(5))
+print('Negative Adjective: ',Counter(neg_adj).most_common(5))
+print('Positive Noun: ',Counter(pos_noun).most_common(5))
+print('Negative Noun: ',Counter(neg_noun).most_common(5))
+
+ENGLISH_STOP_WORDS = stopwords.words('english')
+
+"""taking stop words from stopwords library and adding extra stop words:"""
+
+stop_words = text.ENGLISH_STOP_WORDS.union(['didnt','did','havent', 'week', 'hi','wa','ha','day','today','really','also',
+                                            'go', 'us', 'dont', 'got', 'im', 'ive','burger','food' ,'came', 'back',
+                                           'get','try', 'would', 'time','good','great','service','didn','definitely','hotel','went','took','left',
+                                            'check','told','asked','like','don','wasn','hotels','just','don','said','people','ve','stay','stayed',
+                                           'loved','com','night','birthday','free','touch','little','given','making','hear','recommend','card','make',
+                                           'feel','days','differ','thier','couldn','breakfast'])
+
+vectorizer = CountVectorizer(stop_words=wordss)
+doc_word = vectorizer.fit_transform(positive_reviews['Joined_text_lemmatize'])
+doc_word.shape
+
+def display_topics(model, feature_names, no_top_words, topic_names=None):
+    for ix, topic in enumerate(model.components_):
+        if not topic_names or not topic_names[ix]:
+            print("\nTopic ", ix)
+        else:
+            print("\nTopic: '",topic_names[ix],"'")
+        print(", ".join([feature_names[i]
+                        for i in topic.argsort()[:-no_top_words - 1:-1]]))
+
+example = positive_reviews['Joined_text_lemmatize']
+
+"""### LSA Topicing"""
+
+lsa = TruncatedSVD(3)
+doc_topic = lsa.fit_transform(doc_word)
+lsa.explained_variance_ratio_
+
+display_topics(lsa, vectorizer.get_feature_names(),10)
+
+"""### NMF Topicing"""
+
+nmf_model = NMF(4)
+doc_topic = nmf_model.fit_transform(doc_word)
+
+display_topics(nmf_model, vectorizer.get_feature_names(), 10)
+
+Vt = pd.DataFrame(doc_topic.round(5),
+             index = example,
+             columns = ["Room_Condition","Staff",'Station','Area'])
+Vt
+
+"""## Corecx Topicing
+
+### Topicing on Positive Reviews
+"""
+
+vectorizer = CountVectorizer(ngram_range=(1,2),max_features=2000,
+                            stop_words=wordss,token_pattern='\\b[a-z][a-z]+\\b',
+                            binary=True)
+doc_word = vectorizer.fit_transform(positive_reviews['Review'])
+words = list(np.asarray(vectorizer.get_feature_names()))
+
+topic_model = ct.Corex(n_hidden=3, words=words, seed=1)
+topic_model.fit(doc_word, words=words, docs=positive_reviews)
+topics = topic_model.get_topics()
+for n,topic in enumerate(topics):
+    topic_words,_,_ = zip(*topic)
+    print('{}: '.format(n) + ','.join(topic_words))
+
+"""### Topicing on Negative Reviews"""
+
+vectorizer = CountVectorizer(ngram_range=(1,3),max_features=2000,
+                            stop_words=words_neg,token_pattern='\\b[a-z][a-z]+\\b',
+                            binary=True)
+doc_word = vectorizer.fit_transform(negative_reviews['Review'])
+words = list(np.asarray(vectorizer.get_feature_names()))
+
+topic_model = ct.Corex(n_hidden=5, words=words, seed=1)
+topic_model.fit(doc_word, words=words, docs=negative_reviews)
+topics = topic_model.get_topics()
+for n,topic in enumerate(topics):
+    topic_words,_,_ = zip(*topic)
+    print('{}: '.format(n) + ','.join(topic_words))
+
+"""# Clustring"""
+
+def cluster(df):
+    for i in df:
+        lat = i['lat'].unique()
+        lng = i['lng'].unique()
+        loc = []
+        for f, b in zip(lat, lng):
+            loc.append([f,b])
+        confert =pd.DataFrame(loc)
+        confert.dropna(inplace=True)
+        lat = confert[0].tolist()
+        lng = confert[1].tolist()
+        loc = []
+        for f, b in zip(lat,lng):
+            loc.append([f,b])
+
+        X = StandardScaler().fit_transform(loc)
+        db = DBSCAN(eps=0.15, min_samples=3).fit(X)
+
+        # Let's find the observations DBSCAN called "core"
+        core_samples_mask = np.zeros_like(db.labels_, dtype=bool)
+        core_samples_mask[db.core_sample_indices_] = True
+        labels = db.labels_
+
+        # Number of clusters in labels, ignoring noise if present.
+        n_clusters_ = len(set(labels)) - (1 if -1 in labels else 0)
+
+        unique_labels = set(labels)
+        colors = plt.cm.rainbow(np.linspace(0, 1, len(unique_labels)))
+        plt.figure(dpi=200)
+        show_core = True
+        show_non_core = True
+        for k, col in zip(unique_labels, colors):
+            if k == -1:
+                # Black used for noise.
+                col = 'k'
+
+            class_member_mask = (labels == k)
+            if show_core:
+                xy = X[class_member_mask & core_samples_mask]
+                x, y = xy[:,0], xy[:,1]
+                plt.scatter(x, y, c=col, edgecolors='k',  s=20, linewidths=1.1) # add black border for core points
+
+            if show_non_core:
+                xy = X[class_member_mask & ~core_samples_mask]
+                x, y = xy[:,0], xy[:,1]
+                plt.scatter(x, y, c=col, s=20, linewidths=1.1)
+
+        plt.title('Estimated number of clusters: %d' % n_clusters_);
+
+list_of_country_df = []
+for i in range(len(df_all_data['Country'].value_counts().index)):
+    list_of_country_df.append(df_all_data[(df_all_data["Country"] == df_all_data['Country'].value_counts().index[i])])
+
+cluster([df_all_data])
+
+"""### Cluster for hotels location in each country"""
+
+cluster(list_of_country_df)
+
+"""# SVD Recommndation System"""
+
+df_recommand = data_sample
+
+df_reco = df_all_data[["Reviewer_Nationality" , "Hotel_Name" , "Reviewer_Score","Country"]]
+df_reco
+
+df_reco = df_reco[df_reco["Reviewer_Nationality"] != " "]
+df_reco.Reviewer_Nationality = df_reco.Reviewer_Nationality.str.strip()
+
+df_reco['Country'].value_counts().index
+
+plt.figure(figsize=(10,10))
+plt.pie(x=df_reco['Country'].value_counts(),labels=list(df_reco['Country'].value_counts().index)
+        ,autopct='%.2f%%',textprops={'fontsize': 17},explode=[0.03,0.01,0.01,0.01,0.05,0.05])
+plt.title('Comparison between reviewed hotels in each country',fontdict={'fontsize':20})
+
+centre_circle = plt.Circle((0,0),0.45,fc='white')
+fig = plt.gcf()
+fig.gca().add_artist(centre_circle)
+
+
+
+plt.show()
+
+df_top_6 = df_reco[(df_reco['Reviewer_Nationality'] == "United Kingdom") | (df_reco['Reviewer_Nationality'] == "United States of America") |(df_reco['Reviewer_Nationality'] == "Australia") | (df_reco['Reviewer_Nationality'] == "Ireland") |(df_reco['Reviewer_Nationality'] == "United Arab Emirates") | (df_reco['Reviewer_Nationality'] == "Saudi Arabia")]
+plt.figure(figsize=(15,8))
+sns.countplot(x='Reviewer_Nationality',data=df_top_6 ,order = df_top_6['Reviewer_Nationality'].value_counts().index)
+plt.title('Top 6 Nationalities in Term of Number of Reviews',fontdict={'fontsize':20})
+plt.xticks(rotation=90);
+
+df_high_all = df_reco[(df_reco["Reviewer_Score"] >= 8)]
+df_high_all
+
+df_reco['Country'].value_counts().index
+
+list_of_country_df = []
+for i in range(len(df_reco['Country'].value_counts().index)):
+    list_of_country_df.append(df_high_all[(df_high_all["Country"] == df_reco['Country'].value_counts().index[i])])
+    list_of_country_df[i] = list_of_country_df[i][["Reviewer_Nationality" , "Hotel_Name"]]
+    list_of_country_df[i] = pd.get_dummies(list_of_country_df[i] , columns =["Hotel_Name"])
+    list_of_country_df[i] = list_of_country_df[i].drop_duplicates()
+    list_of_country_df[i] = list_of_country_df[i].groupby("Reviewer_Nationality").sum()
+
+def plot_3D_reco(df):
+    U, Sigma, VT = svd(df)
+    plt.style.use('seaborn')
+
+    fig = plt.figure(figsize=(20,16))
+    ax = fig.gca(projection='3d')
+    ax.scatter(U[:,0],U[:,1],U[:,2],c='k',s=150);
+    ax.set_xlabel("D1", fontsize=20, labelpad=20)
+    ax.set_ylabel("D2", fontsize=20, labelpad=20)
+    ax.set_zlabel("D3", fontsize=20, labelpad=20);
+
+    lbls = df.index
+    offset = 0.02
+    for i, txt in enumerate(lbls):
+        if i not in [6,7]:
+            ax.text(U[i,0]+offset,U[i,1],U[i,2],txt, fontsize=20)
+        else:
+            ax.text(U[i,0]+offset,U[i,1],U[i,2]+5*offset,txt, fontsize=20)
+
+plot_3D_reco(list_of_country_df[0].sample(8))
+
+def get_recommends_user(userID, df ,Nationalities , Hotels):
+    U, Sigma, VT = svd(df)
+    userrecs = []
+    for user in range(U.shape[0]):
+        if user!= userID:
+            userrecs.append([user,np.dot(U[userID],U[user])])
+    final_rec = [i[0] for i in sorted(userrecs,key=lambda x: x[1],reverse=True)]
+    comp_user = final_rec[0]
+    print("Users from %s are most similar to users from %s."% (User_Nationality_list[userID], User_Nationality_list[comp_user]))
+    rec_likes = df.iloc[comp_user]
+    current = df.iloc[userID]
+    recs = []
+    for i,item in enumerate(current):
+        if item != rec_likes[i] and rec_likes[i]!=0:
+            recs.append(i)
+    return recs
+
+user_nation = 'Saudi Arabia'
+#user_nation = input("Enter Country Name ")
+print("=========People from %s========= "%user_nation )
+
+i = 0
+for df in list_of_country_df:
+    print("\n\n===Recommended hotels in %s==="%df_reco['Country'].value_counts().index[i])
+    User_Nationality_list = df.index
+    Hotel_names_list = df.columns.str.replace("Hotel_Name_", "")
+    user_nation_index = list(df.index).index(user_nation)
+    recommended_hotels = get_recommends_user(user_nation_index,df,
+                                             User_Nationality_list,Hotel_names_list)
+
+
+    if len(recommended_hotels) > 10:
+        recommended_hotels_first_10 = recommended_hotels[0:10]
+    else:
+        recommended_hotels_first_10 = recommended_hotels
+
+    print("There are %s hotels that people from %s did not visit, they might like" % (len(recommended_hotels) ,
+                                                                                      User_Nationality_list[user_nation_index]))
+    print("\n%s Hotels for people from %s to check out:\n "% (len(recommended_hotels_first_10) ,
+                                                              User_Nationality_list[user_nation_index]),
+                                                            list(Hotel_names_list[recommended_hotels_first_10]))
+    i+=1
+
+"""# Recommndation System"""
+
+recom_data = df_recommand[df_recommand['Reviewer_Score'] >= 8]
+recom_data = recom_data[['Reviewer_Nationality','Hotel_Name']]
+recom_data.drop_duplicates(inplace=True)
+recom_data.Reviewer_Nationality = recom_data.Reviewer_Nationality.str.strip()
+
+recom_data = recom_data[recom_data['Reviewer_Nationality'] != 'United Kingdom']
+recom_data = recom_data[recom_data['Reviewer_Nationality'] != 'United States of America']
+recom_data = recom_data[recom_data['Reviewer_Nationality'] != 'Australia']
+recom_data = recom_data[recom_data['Reviewer_Nationality'] != 'Ireland']
+
+user_hotel_map = defaultdict(list)
+hotel_user_map = defaultdict(list)
+
+data_recom = pd.DataFrame(recom_data)
+data_recom.to_csv(r'data_rec.csv', index=False)
+
+with open('data_rec.csv', 'r') as csvfile:
+    w = csv.reader(csvfile)
+    for row in w:
+        user_hotel_map[row[0]].append(row[1])
+        hotel_user_map[row[1]].append(row[0])
+
+def get_similar_hotel(user_hotel_map,hotel_user_map,m):
+    biglist = []
+    for u in hotel_user_map[m]:
+        biglist.extend(user_hotel_map[u])
+    return Counter(biglist).most_common(4)[1:]
+
+def get_hotel_recommendation(user_hotel_map,hotel_user_map,u1):
+    biglist = []
+    for m in user_hotel_map[u1]:
+        for u in hotel_user_map[m]:
+            biglist.extend(user_hotel_map[u])
+    return Counter(biglist).most_common(3)
+
+def get_similar_users(user_hotel_map,hotel_user_map,m):
+    hotel_user_map
+    user_hotel_map
+    biglist = []
+    for u in user_hotel_map[m]:
+        biglist.extend(hotel_user_map[u])
+    return Counter(biglist).most_common(4)[1:]
+
+get_similar_hotel(user_hotel_map,hotel_user_map,'The Kensington Hotel')
+
+get_hotel_recommendation(user_hotel_map,hotel_user_map,'Saudi Arabia')
+
+country = 'Kuwait'
+get_similar_users(user_hotel_map,hotel_user_map,country)
+
+"""# Modeling"""
+
+def get_scores(model,X_train,X_val):
+    model.fit(X_train,y_train)
+    print(f'Traing score: {model.score(X_train,y_train)}')
+    print(f'Val score:    {model.score(X_val,y_val)}')
+    print( f"F1 score:    {f1_score(model.predict(X_val),y_val)}")
+    print(f'Precision score: {precision_score(y_val,model.predict(X_val))}')
+    print(f'Recall score: {recall_score(y_val,model.predict(X_val))}')
+    print(f'accuracy score: {accuracy_score(y_val, model.predict(X_val))}')
+
+X = data_sample.Review
+y = data_sample.Sentiment
+
+from sklearn.model_selection import train_test_split
+X_train_val, X_test, y_train_val, y_test = train_test_split(X, y, test_size=0.05 , random_state=42)
+X_train, X_val, y_train, y_val = train_test_split(X_train_val, y_train_val, test_size=0.0534, random_state=42)
+
+from sklearn.feature_extraction.text import CountVectorizer
+
+cv1 = CountVectorizer()
+
+X_train_cv1 = cv1.fit_transform(X_train)
+X_val_cv1  = cv1.transform(X_val)
+
+lr = LogisticRegression()
+get_scores(lr,X_train_cv1,X_val_cv1)
+
+bnb = BernoulliNB()
+get_scores(bnb,X_train_cv1,X_val_cv1)
+
+DTC = DecisionTreeClassifier()
+get_scores(DTC,X_train_cv1,X_val_cv1)
+
+tfidf1 = TfidfVectorizer()
+
+X_train_tfidf1 = tfidf1.fit_transform(X_train)
+X_val_tfidf1  = tfidf1.transform(X_val)
+get_scores(lr,X_train_tfidf1,X_val_tfidf1)
+
+bnb = BernoulliNB()
+get_scores(bnb,X_train_tfidf1,X_val_tfidf1)
+
+DTC = DecisionTreeClassifier()
+get_scores(DTC,X_train_tfidf1,X_val_tfidf1)
+
+"""# Final model"""
+
+model = LogisticRegression()
+tfidf1 = TfidfVectorizer()
+X_train_val_tfidf1 = tfidf1.fit_transform(X_train_val)
+X_test_tfidf1  = tfidf1.transform(X_test)
+model.fit(X_train_val_tfidf1 ,y_train_val)
+print(f'Traing score: {model.score(X_train_val_tfidf1,y_train_val)}')
+print(f'Val score:    {model.score(X_test_tfidf1,y_test)}')
+print( f"F1 score:    {f1_score(model.predict(X_test_tfidf1),y_test)}")
+print(f'Precision score: {precision_score(y_test,model.predict(X_test_tfidf1))}')
+print(f'Recall score: {recall_score(y_test,model.predict(X_test_tfidf1))}')
+print(f'accuracy score: {accuracy_score(y_test, model.predict(X_test_tfidf1))}')
+
